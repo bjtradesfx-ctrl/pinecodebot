@@ -13,7 +13,7 @@ CHART_URL = os.environ.get("TV_CHART_URL", "https://tr.tradingview.com/chart/0pL
 
 
 def process_alert_in_background(ticker, action, price, details):
-    """Takes a fullscreen screenshot and sends a highly copyable raw text message."""
+    """Takes a fullscreen, zoomed-out screenshot and sends a formatted plain-text signal."""
     screenshot_file = f"chart_{ticker}.png"
 
     try:
@@ -29,25 +29,31 @@ def process_alert_in_background(ticker, action, price, details):
             print(f"Loading chart for {ticker}...")
             page.goto(CHART_URL, wait_until="load", timeout=60000)
 
-            # Wait exactly 8 seconds for the candles and strategy boxes to fully paint
+            # Wait for indicators to paint
             page.wait_for_timeout(8000)
 
-            # TRICK: Press Shift+F to force TradingView into Fullscreen Mode
-            # This instantly hides the watchlist, top menu, and drawing panels
+            # TRICK 1: Press Shift+F to force TradingView into Fullscreen Mode
             page.keyboard.press("Shift+F")
-            page.wait_for_timeout(1500)  # Wait a brief moment for the zoom animation to finish
+            page.wait_for_timeout(1500)
 
-            # Take the cropped screenshot
+            # TRICK 2: Zoom out the chart by pressing Ctrl+Down Arrow 5 times
+            for _ in range(5):
+                page.keyboard.press("Control+ArrowDown")
+                page.wait_for_timeout(200)  # Brief pause so TradingView registers each zoom step
+
+            # Take the cropped and zoomed-out screenshot
             page.screenshot(path=screenshot_file)
             browser.close()
             print("Screenshot captured successfully!")
 
-        # 2. Build the COPYABLE plain-text signal (No Embed Cards)
+        # 2. Build the COPYABLE plain-text signal
+        # This replaces "SL:" with "**SL:**" and "TP:" with "**TP:**" so they appear bold in Discord
+        formatted_details = details.replace("SL:", "**SL:**").replace("TP:", "**TP:**")
+
         signal_text = (
             f"**PAIR:** {ticker}\n"
             f"**ACTION:** {str(action).upper()}\n"
-            f"**PRICE:** {price}\n"
-            f"**DETAILS:** {details}"
+            f"**ENTRY:** {formatted_details}"
         )
 
         payload = {
@@ -57,23 +63,21 @@ def process_alert_in_background(ticker, action, price, details):
         # 3. Send text and image to Discord
         with open(screenshot_file, "rb") as img:
             files = {"files[0]": (screenshot_file, img, "image/png")}
-
-            response = requests.post(
+            requests.post(
                 DISCORD_WEBHOOK_URL,
                 data={"payload_json": json.dumps(payload)},
                 files=files
             )
-            response.raise_for_status()
             print("Successfully sent signal to Discord.")
 
     except Exception as e:
         print(f"Screenshot Error: {e}")
-        # Fallback text if the screenshot somehow fails
+        # Fallback text format
+        formatted_details = details.replace("SL:", "**SL:**").replace("TP:", "**TP:**")
         fallback_text = (
             f"**PAIR:** {ticker}\n"
             f"**ACTION:** {str(action).upper()}\n"
-            f"**PRICE:** {price}\n"
-            f"**DETAILS:** {details}\n"
+            f"**ENTRY:** {formatted_details}\n"
             f"*(Screenshot capture failed: {e})*"
         )
         requests.post(DISCORD_WEBHOOK_URL, json={"content": fallback_text})
@@ -96,7 +100,6 @@ def tradingview_webhook():
         price = data.get("price", "0.00")
         details = data.get("details", "No details")
 
-        # Start the background screenshot thread
         threading.Thread(
             target=process_alert_in_background,
             args=(ticker, action, price, details)
