@@ -5,27 +5,47 @@ from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
 
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1538899048839258162/LQ79MbfFTVkI7vlFNbmdkoLu4u_puQRCqr8IVS-NYyoXMVZ3MnpALYjEdJjm2xTHmELN")
-# Replace with your shared TradingView chart layout URL
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "YOUR_DISCORD_WEBHOOK_HERE")
 CHART_URL = os.environ.get("TV_CHART_URL", "https://tr.tradingview.com/chart/0pL1VjCl/?symbol=FX%3AEURUSD")
 
 
 def take_chart_screenshot(output_path="chart.png"):
-    """Launches a headless browser to capture the live TradingView chart."""
+    """Launches stealth Chromium to bypass bot checks and capture the TradingView chart."""
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        # Create a browser context with high resolution
-        context = browser.new_context(viewport={"width": 1920, "height": 1080})
+        # Launch with flags that hide automation from TradingView/Cloudflare
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ]
+        )
+
+        # Emulate a real Windows desktop browser context
+        context = browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            device_scale_factor=2
+        )
         page = context.new_page()
 
-        # Load your chart URL
-        page.goto(CHART_URL, wait_until="networkidle")
-        # Allow extra time for indicators and candles to render
-        page.wait_for_timeout(3000)
+        try:
+            # Navigate to the chart layout and wait for network to settle
+            page.goto(CHART_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Save screenshot
-        page.screenshot(path=output_path)
-        browser.close()
+            # Give TradingView's heavy WebSockets and indicators 8 seconds to fully render candles
+            page.wait_for_timeout(8000)
+
+            # Take the screenshot
+            page.screenshot(path=output_path, full_page=False)
+        except Exception as e:
+            print(f"Playwright rendering error: {e}")
+        finally:
+            browser.close()
+
     return output_path
 
 
@@ -36,23 +56,23 @@ def tradingview_webhook():
         if not data:
             return jsonify({"status": "error", "message": "No JSON payload received"}), 400
 
-        ticker = data.get("ticker", "XAUUSD")
+        ticker = data.get("ticker", "EURUSD")
         action = data.get("action", "ALERT UPDATE")
         price = data.get("price", "0.00")
         details = data.get("details", "No details provided")
 
-        # Set embed color: Red for Loss, Green for Profit/Entries
-        embed_color = 3066993  # Green
+        # Color routing: Red for Loss, Green for Profit/Entries
+        embed_color = 3066993  # Default Green
         if "Loss" in details or "🛑" in details:
-            embed_color = 15158332  # Red
+            embed_color = 15158332  # Red for Loss
         elif "Profit" in details or "✅" in details:
-            embed_color = 3066993  # Green
+            embed_color = 3066993  # Green for Profit
 
-        # Take screenshot of the chart
+        # Take screenshot with stealth browser
         screenshot_file = "chart.png"
         take_chart_screenshot(screenshot_file)
 
-        # Build Discord payload referencing the uploaded image
+        # Build Discord payload
         payload = {
             "embeds": [{
                 "title": f"🚨 {ticker} SCALPER BOT 🚨",
@@ -67,23 +87,27 @@ def tradingview_webhook():
             }]
         }
 
-        # Send multipart request with the image file attached
-        with open(screenshot_file, "rb") as img:
-            files = {
-                "file": ("chart.png", img, "image/png")
-            }
-            response = requests.post(
-                DISCORD_WEBHOOK_URL,
-                data={"payload_json": requests.compat.json.dumps(payload)},
-                files=files
-            )
+        # Send multipart request with image attached to Discord
+        if os.path.exists(screenshot_file):
+            with open(screenshot_file, "rb") as img:
+                files = {
+                    "file": ("chart.png", img, "image/png")
+                }
+                response = requests.post(
+                    DISCORD_WEBHOOK_URL,
+                    data={"payload_json": requests.compat.json.dumps(payload)},
+                    files=files
+                )
+                response.raise_for_status()
+
+            # Clean up local file
+            os.remove(screenshot_file)
+        else:
+            # Fallback if screenshot failed entirely: send text embed only
+            response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
             response.raise_for_status()
 
-        # Clean up local screenshot file
-        if os.path.exists(screenshot_file):
-            os.remove(screenshot_file)
-
-        return jsonify({"status": "success", "message": "Signal + Screenshot sent to Discord!"}), 200
+        return jsonify({"status": "success", "message": "Signal + Chart Screenshot sent!"}), 200
 
     except Exception as e:
         print(f"Error processing webhook: {e}")
