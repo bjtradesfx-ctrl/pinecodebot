@@ -5,9 +5,9 @@ from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
 
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "YOUR_DISCORD_WEBHOOK_HERE")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1538899048839258162/LQ79MbfFTVkI7vlFNbmdkoLu4u_puQRCqr8IVS-NYyoXMVZ3MnpALYjEdJjm2xTHmELN")
 # Replace with your shared TradingView chart layout URL
-CHART_URL = os.environ.get("TV_CHART_URL", "https://www.tradingview.com/chart/YOUR_CHART_ID/")
+CHART_URL = os.environ.get("TV_CHART_URL", "https://tr.tradingview.com/chart/0pL1VjCl/?symbol=FX%3AEURUSD")
 
 
 def take_chart_screenshot(output_path="chart.png"):
