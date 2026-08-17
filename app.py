@@ -13,11 +13,11 @@ CHART_URL = os.environ.get("TV_CHART_URL", "https://tr.tradingview.com/chart/0pL
 
 
 def process_alert_in_background(ticker, action, price, details):
-    """Takes a fullscreen, zoomed-out screenshot and sends a formatted plain-text signal."""
+    """Takes a fullscreen, close-up screenshot and sends a formatted plain-text signal."""
     screenshot_file = f"chart_{ticker}.png"
 
     try:
-        # 1. Launch Playwright
+        # 1. Launch Playwright Headless Browser
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -29,25 +29,28 @@ def process_alert_in_background(ticker, action, price, details):
             print(f"Loading chart for {ticker}...")
             page.goto(CHART_URL, wait_until="load", timeout=60000)
 
-            # Wait for indicators to paint
+            # Wait for indicators and candles to render
             page.wait_for_timeout(8000)
 
-            # TRICK 1: Press Shift+F to force TradingView into Fullscreen Mode
+            # Fullscreen mode: hides sidebars, header, and watchlists
             page.keyboard.press("Shift+F")
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(1000)
 
-            # TRICK 2: Zoom out the chart by pressing Ctrl+Down Arrow 5 times
-            for _ in range(5):
-                page.keyboard.press("Control+ArrowDown")
-                page.wait_for_timeout(200)  # Brief pause so TradingView registers each zoom step
+            # Reset chart scale to default auto
+            page.keyboard.press("Alt+R")
+            page.wait_for_timeout(500)
 
-            # Take the cropped and zoomed-out screenshot
+            # Zoom in to make the entry candle and strategy box clearly visible
+            for _ in range(2):
+                page.keyboard.press("Control+ArrowUp")
+                page.wait_for_timeout(200)
+
+            # Take the focused screenshot
             page.screenshot(path=screenshot_file)
             browser.close()
             print("Screenshot captured successfully!")
 
-        # 2. Build the COPYABLE plain-text signal
-        # This replaces "SL:" with "**SL:**" and "TP:" with "**TP:**" so they appear bold in Discord
+        # 2. Build the copyable plain-text signal format
         formatted_details = details.replace("SL:", "**SL:**").replace("TP:", "**TP:**")
 
         signal_text = (
@@ -72,7 +75,7 @@ def process_alert_in_background(ticker, action, price, details):
 
     except Exception as e:
         print(f"Screenshot Error: {e}")
-        # Fallback text format
+        # Fallback text if the screenshot fails
         formatted_details = details.replace("SL:", "**SL:**").replace("TP:", "**TP:**")
         fallback_text = (
             f"**PAIR:** {ticker}\n"
@@ -83,7 +86,7 @@ def process_alert_in_background(ticker, action, price, details):
         requests.post(DISCORD_WEBHOOK_URL, json={"content": fallback_text})
 
     finally:
-        # 4. Clean up local file
+        # Clean up local image file
         if os.path.exists(screenshot_file):
             os.remove(screenshot_file)
 
@@ -100,6 +103,7 @@ def tradingview_webhook():
         price = data.get("price", "0.00")
         details = data.get("details", "No details")
 
+        # Process in background thread to avoid webhook timeouts
         threading.Thread(
             target=process_alert_in_background,
             args=(ticker, action, price, details)
