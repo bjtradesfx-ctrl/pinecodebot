@@ -13,17 +13,21 @@ CHART_URL = os.environ.get("TV_CHART_URL", "https://tr.tradingview.com/chart/0pL
 
 
 def process_alert_in_background(ticker, action, price, details):
-    """Takes a fullscreen, close-up screenshot and sends a formatted plain-text signal."""
+    """Downloads the native TradingView snapshot to get the exact watermark and framing."""
     screenshot_file = f"chart_{ticker}.png"
 
     try:
-        # 1. Launch Playwright Headless Browser
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage"]
             )
-            context = browser.new_context(viewport={"width": 1920, "height": 1080})
+
+            # accept_downloads=True is REQUIRED to intercept TradingView's native image export
+            context = browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                accept_downloads=True
+            )
             page = context.new_page()
 
             print(f"Loading chart for {ticker}...")
@@ -32,25 +36,37 @@ def process_alert_in_background(ticker, action, price, details):
             # Wait for indicators and candles to render
             page.wait_for_timeout(8000)
 
-            # Fullscreen mode: hides sidebars, header, and watchlists
-            page.keyboard.press("Shift+F")
+            # Reset chart scale to default auto (matches the exact zoom in your reference image)
+            page.keyboard.press("Alt+R")
             page.wait_for_timeout(1000)
 
-            # Reset chart scale to default auto
-            page.keyboard.press("Alt+R")
-            page.wait_for_timeout(500)
+            # ATTEMPT NATIVE SNAPSHOT (The exact format with watermark and logo)
+            try:
+                with page.expect_download(timeout=10000) as download_info:
+                    # 1. Click the Camera icon on the top right
+                    page.locator(
+                        'button[aria-label="Take a snapshot"], button[data-name="take-snapshot"], #header-toolbar-screenshot').first.click()
+                    page.wait_for_timeout(1000)
 
-            # Zoom in to make the entry candle and strategy box clearly visible
-            for _ in range(2):
-                page.keyboard.press("Control+ArrowUp")
-                page.wait_for_timeout(200)
+                    # 2. Click "Download image" from the dropdown menu
+                    page.locator(
+                        '[data-name="save-chart-image"], :text("Download image"), :text("Save chart image")').first.click()
 
-            # Take the focused screenshot
-            page.screenshot(path=screenshot_file)
+                # Save the cleanly exported file
+                download = download_info.value
+                download.save_as(screenshot_file)
+                print("Native TradingView snapshot downloaded successfully!")
+
+            except Exception as native_e:
+                print(f"Native snapshot failed, using fallback: {native_e}")
+                # FALLBACK: Fullscreen manual crop if TradingView's UI blocks the button
+                page.keyboard.press("Shift+F")
+                page.wait_for_timeout(1500)
+                page.screenshot(path=screenshot_file)
+
             browser.close()
-            print("Screenshot captured successfully!")
 
-        # 2. Build the copyable plain-text signal format
+        # Build the copyable plain-text signal format
         formatted_details = details.replace("SL:", "**SL:**").replace("TP:", "**TP:**")
 
         signal_text = (
@@ -63,7 +79,7 @@ def process_alert_in_background(ticker, action, price, details):
             "content": signal_text
         }
 
-        # 3. Send text and image to Discord
+        # Send text and image to Discord
         with open(screenshot_file, "rb") as img:
             files = {"files[0]": (screenshot_file, img, "image/png")}
             requests.post(
@@ -74,8 +90,8 @@ def process_alert_in_background(ticker, action, price, details):
             print("Successfully sent signal to Discord.")
 
     except Exception as e:
-        print(f"Screenshot Error: {e}")
-        # Fallback text if the screenshot fails
+        print(f"Background Process Error: {e}")
+        # Fallback text if screenshot pipeline completely fails
         formatted_details = details.replace("SL:", "**SL:**").replace("TP:", "**TP:**")
         fallback_text = (
             f"**PAIR:** {ticker}\n"
